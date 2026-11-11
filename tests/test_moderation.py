@@ -115,6 +115,14 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(text=text):
                 self.assertFalse(contains_profanity(text))
 
+    def test_detects_profane_abbreviations_as_whole_words(self):
+        for text in ("WTF?!", "w.t.f.", "STFU", "GTFO!", "idgaf", "omfg", "ПНХ", "п.з.д.ц.", "пздец"):
+            with self.subTest(text=text):
+                self.assertTrue(contains_profanity(text))
+        for text in ("wtforms", "AF", "BS", "нх", "пздцкий"):
+            with self.subTest(text=text):
+                self.assertFalse(contains_profanity(text))
+
     def test_detects_masked_and_elongated_russian_profanity(self):
         for text in ("Бл**дь", "Бл**д", "БЛ•ТЬ", "Пошел нахер", "Еееееебаааать!", "Е*ееееебаааать!"):
             with self.subTest(text=text):

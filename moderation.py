@@ -32,13 +32,22 @@ WORD_FAMILIES = {
     "cunt": ("", "s"),
     "dickhead": ("", "s"),
 }
+PROFANE_ABBREVIATIONS = {
+    "wtf", "wtaf", "stfu", "gtfo", "ffs", "fml", "lmfao", "idgaf", "omfg",
+    "пнх", "нхй", "пхй", "пздц", "пздец",
+}
 PROFANE_WORDS = {
     "дідько", "хуй", "хуя", "хуем", "хуёвый", "хуевый", "нахуй", "нахер", "нахёр",
-    "похуй", "хер", "хёр", "хрен", "bullshit", "wtf",
-} | {stem + ending for stem, endings in WORD_FAMILIES.items() for ending in endings}
+    "похуй", "хер", "хёр", "хрен", "bullshit",
+} | PROFANE_ABBREVIATIONS | {
+    stem + ending for stem, endings in WORD_FAMILIES.items() for ending in endings
+}
 KNOWN_VARIANTS = r"бл[*•]+(?:ть|дь?)|х[*•]+й|е+б+а+ть|f[*•]+k(?:s|ed|er|ers|ing)?"
 PROFANITY = re.compile(
     r"\b(?:" + "|".join(map(re.escape, sorted(PROFANE_WORDS))) + "|" + KNOWN_VARIANTS + r")\b"
+)
+DOTTED_ABBREVIATIONS = re.compile(
+    r"\b(?:" + "|".join(r"\.".join(word) for word in sorted(PROFANE_ABBREVIATIONS)) + r")\b"
 )
 MASK_CHARS = "*•"
 IN_WORD_MASK = re.compile(r"(?<=[^\W\d_])[*•]+(?=[^\W\d_])")
@@ -97,7 +106,7 @@ def contains_profanity(text: str) -> bool:
     normalized = "".join(
         character for character in normalized if unicodedata.category(character) != "Cf"
     )
-    if PROFANITY.search(normalized):
+    if PROFANITY.search(normalized) or ("." in normalized and DOTTED_ABBREVIATIONS.search(normalized)):
         return True
     if any(character in normalized for character in MASK_CHARS):
         if any(matches_masked_word(token) for token in MASKED_TOKEN.findall(normalized)):
