@@ -9,6 +9,7 @@ from aiogram.enums import ChatMemberStatus
 from features import TrafficWindow, domain_of, has_untrusted_link
 from gatekeeper import is_member, router as gatekeeper_router, signature
 from handlers import apply_strike, router
+from panel_auth import sign, verify
 from spam_model import spam_probability
 from storage import ChatSettings
 
@@ -51,6 +52,15 @@ class RulesTests(unittest.TestCase):
         events = set(router.resolve_used_update_types()) | set(gatekeeper_router.resolve_used_update_types())
         self.assertTrue({"message", "edited_message", "chat_member", "callback_query"}.issubset(events))
         self.assertIn("my_chat_member", events)
+
+    def test_dashboard_token_has_a_purpose_group_and_expiration(self):
+        with patch("panel_auth.time.time", return_value=100):
+            token = sign("test", "login", 2, -1001, 300)
+            self.assertEqual(verify("test", "login", token)[:2], (2, -1001))
+            self.assertIsNone(verify("test", "session", token))
+            self.assertIsNone(verify("another-secret", "login", token))
+        with patch("panel_auth.time.time", return_value=400):
+            self.assertIsNone(verify("test", "login", token))
 
 
 class FeatureStorageTests(unittest.TestCase):

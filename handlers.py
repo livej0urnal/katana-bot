@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 
 from aiogram import Bot, F, Router
@@ -14,6 +15,7 @@ from aiogram.types import (
 
 from features import TrafficWindow, domain_of, has_untrusted_link, record_traffic
 from moderation import contains_link, contains_profanity
+from panel_auth import sign
 from spam_model import spam_probability
 from storage import ChatSettings
 
@@ -728,6 +730,23 @@ async def apply_strike(bot, settings, chat_id, user_id):
             )
     except TelegramAPIError as error:
         logger.warning("Strike action in chat %s failed: %s", chat_id, error)
+
+
+@group_router.message(Command("panel"))
+async def open_panel(message: Message, bot: Bot):
+    secret = os.getenv("DASHBOARD_SESSION_SECRET", "")
+    if not secret or not message.from_user or message.sender_chat is not None:
+        return
+    if not await is_admin(message, bot):
+        return
+    user_id = message.from_user.id
+    token = sign(secret, "login", user_id, message.chat.id, 300)
+    try:
+        await bot.send_message(user_id, f"Код входа в панель Katana (5 минут):\n{token}")
+    except TelegramAPIError:
+        await message.reply("Нажмите Start в личном чате с ботом и повторите /panel.")
+    else:
+        await message.reply("Код входа отправлен в личный чат.")
 
 
 group_router.message.register(moderate_message)
