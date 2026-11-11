@@ -1,5 +1,15 @@
+# Local credentials
 .env
+.env.*
+!.env.example
+
+# Python and IDE files
 .venv/
 .idea/
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Local database and SQLite sidecar files
 *.sqlite3*
