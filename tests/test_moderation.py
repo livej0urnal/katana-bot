@@ -101,6 +101,7 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_detects_russian_and_english_profanity_as_whole_words(self):
         self.assertTrue(contains_profanity("Вот БЛЯТЬ!"))
+        self.assertTrue(contains_profanity("Это хуйня."))
         self.assertTrue(contains_profanity("This is BULLSHIT."))
         self.assertFalse(contains_profanity("страхуй, хлеб, class, assignment"))
 
