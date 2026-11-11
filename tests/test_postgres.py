@@ -36,6 +36,8 @@ class PostgresTests(unittest.TestCase):
                 {
                     "groups": 1, "link_filter": 1, "reports": 2,
                     "profanity_settings": 1, "autoban": 1, "profanity_strikes": 1,
+                    "feature_options": 0, "allowlist": 0, "moderation_log": 0,
+                    "reputation_votes": 0, "announcements": 0,
                 },
             )
             with self.assertRaisesRegex(ValueError, "пустую"):

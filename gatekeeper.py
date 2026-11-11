@@ -12,7 +12,7 @@ from aiogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup, Message,
 )
 
-from features import TrafficWindow
+from features import TrafficWindow, record_traffic
 from storage import ChatSettings
 
 
@@ -36,7 +36,9 @@ def is_member(member) -> bool:
 
 
 @router.chat_member(F.chat.type == ChatType.SUPERGROUP)
-async def on_join(event: ChatMemberUpdated, bot: Bot, settings: ChatSettings, ai_analysis=None):
+async def on_join(
+    event: ChatMemberUpdated, bot: Bot, settings: ChatSettings, ai_analysis=None, redis_traffic=None
+):
     if is_member(event.old_chat_member) or event.new_chat_member.status != ChatMemberStatus.MEMBER:
         return
     chat_id = event.chat.id
@@ -47,15 +49,17 @@ async def on_join(event: ChatMemberUpdated, bot: Bot, settings: ChatSettings, ai
     if settings.option(chat_id, "newspam") != "off":
         settings.set_option(chat_id, f"joined:{user.id}", str(now))
     profile_mode = settings.option(chat_id, "profile")
-    if ai_analysis is not None and profile_mode != "off":
-        await scan_profile(bot, settings, ai_analysis, chat_id, user.id, profile_mode)
     raid_enabled = settings.option(chat_id, "raid") == "on"
-    if raid_enabled and joins.record(chat_id, user.id):
+    if raid_enabled and await record_traffic(redis_traffic, "joins", joins, chat_id, user.id):
         settings.set_option(chat_id, "raid_until", str(now + 300))
     in_raid = raid_enabled and int(settings.option(chat_id, "raid_until", "0")) > now
-    if not in_raid and settings.option(chat_id, "gate") != "on":
-        return
+    if in_raid or settings.option(chat_id, "gate") == "on":
+        await start_challenge(bot, settings, chat_id, user, now)
+    if ai_analysis is not None and profile_mode != "off":
+        await scan_profile(bot, settings, ai_analysis, chat_id, user.id, profile_mode)
 
+
+async def start_challenge(bot, settings, chat_id, user, now):
     deadline = now + GATE_SECONDS
     first, second = (secrets.randbelow(9) + 1 for _ in range(2))
     answer = first + second

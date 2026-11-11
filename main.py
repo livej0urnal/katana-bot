@@ -59,12 +59,21 @@ async def main() -> None:
                     session, os.getenv("OLLAMA_URL", "http://127.0.0.1:11434"),
                     text_model, vision_model,
                 )
+            redis_traffic = None
+            redis_url = os.getenv("REDIS_URL", "").strip()
+            if redis_url:
+                from redis_traffic import RedisTraffic
+
+                redis_traffic = RedisTraffic(redis_url)
             worker = asyncio.create_task(announcement_worker(bot, settings))
             try:
-                await dispatcher.start_polling(bot, settings=settings, ai_analysis=ai_analysis, close_bot_session=False)
+                await dispatcher.start_polling(bot, settings=settings, ai_analysis=ai_analysis,
+                    redis_traffic=redis_traffic, close_bot_session=False)
             finally:
                 worker.cancel()
                 await asyncio.gather(worker, return_exceptions=True)
+                if redis_traffic is not None:
+                    await redis_traffic.close()
 
 
 if __name__ == "__main__":

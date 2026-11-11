@@ -7,9 +7,12 @@ from aiogram.enums import ChatMemberStatus, ChatType
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.filters.command import CommandObject
-from aiogram.types import ChatMemberUpdated, ChatPermissions, Message
+from aiogram.types import (
+    CallbackQuery, ChatMemberUpdated, ChatPermissions,
+    InlineKeyboardButton, InlineKeyboardMarkup, Message,
+)
 
-from features import TrafficWindow, domain_of, has_untrusted_link
+from features import TrafficWindow, domain_of, has_untrusted_link, record_traffic
 from moderation import contains_link, contains_profanity
 from spam_model import spam_probability
 from storage import ChatSettings
@@ -21,6 +24,7 @@ router = Router()
 group_router = Router()
 router.include_router(group_router)
 flood_window = TrafficWindow(10, 6)
+spam_burst = TrafficWindow(60, 6)
 pending_autobans: set[tuple[int, int]] = set()
 group = F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP})
 group_router.message.filter(group)
@@ -132,8 +136,43 @@ async def show_settings(message: Message, bot: Bot, settings: ChatSettings) -> N
         f"Проверка новичков: {settings.option(chat.id, 'gate')}\n"
         f"Антирейд: {settings.option(chat.id, 'raid')}\n"
         f"Комментарии: {settings.option(chat.id, 'comments', 'inherit')}\n"
-        f"Автобан: {'включён' if settings.autoban_enabled(chat.id) else 'выключен'}"
+        f"Автобан: {'включён' if settings.autoban_enabled(chat.id) else 'выключен'}",
+        reply_markup=protection_keyboard(chat.id, settings),
     )
+
+
+def protection_keyboard(chat_id: int, settings: ChatSettings) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text=f"{label} · {'вкл' if settings.option(chat_id, option) == 'on' else 'выкл'}",
+            callback_data=f"protect_toggle:{option}",
+        )
+        for option, label in (("flood", "Антифлуд"), ("shadow", "Shadow Mode"))
+    ]])
+
+
+@router.callback_query(F.data.in_({"protect_toggle:flood", "protect_toggle:shadow"}))
+async def toggle_protection(callback: CallbackQuery, bot: Bot, settings: ChatSettings):
+    message = callback.message
+    if not isinstance(message, Message) or not callback.data:
+        await callback.answer("Меню недоступно.")
+        return
+    chat_id = message.chat.id
+    member = await bot.get_chat_member(chat_id, callback.from_user.id)
+    if member.status not in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}:
+        await callback.answer("Требуются права администратора.", show_alert=True)
+        return
+    option = callback.data.split(":")[1]
+    enabled = settings.option(chat_id, option) != "on"
+    if option == "flood" and enabled and not await can_delete_messages(message, bot):
+        await callback.answer("Боту нужно право удалять сообщения.", show_alert=True)
+        return
+    settings.set_option(chat_id, option, "on" if enabled else "off")
+    await callback.answer("Настройки обновлены.")
+    try:
+        await message.edit_reply_markup(reply_markup=protection_keyboard(chat_id, settings))
+    except TelegramAPIError:
+        logger.info("Could not refresh settings buttons in chat %s", chat_id)
 
 
 @group_router.message(Command("profanity"))
@@ -221,8 +260,11 @@ async def ban_by_reply(message: Message, bot: Bot, settings: ChatSettings) -> No
     user_id = target.from_user.id
     if await ban_user(bot, message.chat.id, user_id):
         settings.clear_profanity_strikes(message.chat.id, user_id)
-        settings.audit(message.chat.id, "ban", user_id)
-        await message.reply(f"Пользователь {user_id} забанен. Для разбана используйте /unban {user_id}.")
+        case_id = settings.audit(message.chat.id, "ban", user_id)
+        await message.reply(
+            f"Пользователь {user_id} забанен. Разбан: /unban {user_id}. "
+            f"Обжалование в личке: /appeal {message.chat.id} {case_id} ПРИЧИНА"
+        )
     else:
         await message.reply("Telegram отклонил бан. Проверьте право блокировать участников.")
 
@@ -330,7 +372,7 @@ async def show_reports(message: Message, bot: Bot, settings: ChatSettings) -> No
 
 
 async def moderate_message(
-    message: Message, bot: Bot, settings: ChatSettings, event_update=None, ai_analysis=None
+    message: Message, bot: Bot, settings: ChatSettings, event_update=None, ai_analysis=None, redis_traffic=None
 ) -> None:
     if message.is_automatic_forward:
         return
@@ -374,7 +416,9 @@ async def moderate_message(
         return
     if user_id is not None and str(user_id) in settings.allowlist(chat_id, "user"):
         return
-    flooding = check_flood and flood_window.record((chat_id, user_id), message.message_id, text)
+    flooding = check_flood and await record_traffic(
+        redis_traffic, "flood", flood_window, (chat_id, user_id), message.message_id, text
+    )
     if not (has_profanity or has_blocked_link or flooding or suspected_spam or check_ai or check_image) or await is_admin(message, bot):
         return
     if has_profanity:
@@ -404,6 +448,12 @@ async def moderate_message(
                 reason = "nsfw"
     if reason and await delete_message(message, bot):
         settings.audit(chat_id, "delete", user_id, detail=f"{reason} · {message.message_id}")
+        if (
+            reason in {"new_user_spam", "spam", "scam", "advertising"}
+            and settings.option(chat_id, "raid") == "on"
+            and await record_traffic(redis_traffic, "spam", spam_burst, chat_id, message.message_id)
+        ):
+            settings.set_option(chat_id, "raid_until", str(int(time.time()) + 300))
         if settings.option(chat_id, "strike") == "on" and user_id is not None:
             await apply_strike(bot, settings, chat_id, user_id)
         elif reason == "profanity" and settings.autoban_enabled(chat_id):
@@ -426,12 +476,13 @@ async def enforce_autoban(message: Message, bot: Bot, settings: ChatSettings) ->
         if not await ban_user(bot, chat_id, user.id):
             return
         settings.clear_profanity_strikes(chat_id, user.id)
-        settings.audit(chat_id, "autoban", user.id)
+        case_id = settings.audit(chat_id, "autoban", user.id)
         if settings.option(chat_id, "shadow") == "on":
             return
         await bot.send_message(
             chat_id,
-            f"Пользователь {user.id} забанен за повторные нарушения. Разбан: /unban {user.id}.",
+            f"Пользователь {user.id} забанен. Разбан: /unban {user.id}. "
+            f"Обжалование в личке: /appeal {chat_id} {case_id} ПРИЧИНА",
         )
     finally:
         pending_autobans.discard(key)
@@ -457,6 +508,9 @@ async def change_protection(
         )
         return
     name, value = args
+    if ((name == "flood" and value == "on") or (name == "comments" and value == "strict")) and not await can_delete_messages(message, bot):
+        await message.reply("Дайте боту право удалять сообщения.")
+        return
     if value != "off" and name in {"ai", "nsfw", "profile"}:
         model = None if ai_analysis is None else (
             ai_analysis.text_model if name == "ai" else ai_analysis.vision_model
@@ -637,7 +691,7 @@ async def appeal_command(message: Message, command: CommandObject, settings: Cha
         await message.answer("/appeal ID_ГРУППЫ НОМЕР_ДЕЙСТВИЯ ПРИЧИНА")
         return
     received = settings.submit_appeal(int(args[0]), message.from_user.id, int(args[1]), args[2])
-    await message.answer("Обжалование записано для администраторов." if received else "Действие не найдено.")
+    await message.answer("Обжалование записано для администраторов." if received else "Действие не найдено или уже обжаловано.")
 
 
 async def apply_strike(bot, settings, chat_id, user_id):

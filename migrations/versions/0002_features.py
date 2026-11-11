@@ -33,6 +33,10 @@ def upgrade():
         sa.Column("created_at", sa.BigInteger(), nullable=False),
     )
     op.create_index("ix_moderation_log_chat_id", "moderation_log", ["chat_id", "id"])
+    op.create_index(
+        "ux_moderation_appeal", "moderation_log", ["chat_id", "user_id", "action"],
+        unique=True, postgresql_where=sa.text("action LIKE 'appeal:%'"),
+    )
     op.create_table(
         "reputation_votes",
         sa.Column("chat_id", sa.BigInteger(), primary_key=True),

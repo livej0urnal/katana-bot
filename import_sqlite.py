@@ -16,6 +16,11 @@ TABLES = {
     "profanity_settings": ("chat_id", "mode"),
     "autoban": ("chat_id",),
     "profanity_strikes": ("chat_id", "user_id", "message_id", "recorded_at"),
+    "feature_options": ("chat_id", "name", "value"),
+    "allowlist": ("chat_id", "kind", "value"),
+    "moderation_log": ("id", "chat_id", "user_id", "actor_id", "action", "detail", "created_at"),
+    "reputation_votes": ("chat_id", "voter_id", "user_id", "day"),
+    "announcements": ("chat_id", "body", "interval_seconds", "next_at"),
 }
 
 
@@ -50,6 +55,11 @@ def import_database(source_path: Path, engine) -> dict[str, int]:
                         rows,
                     )
                     counts[table] += len(rows)
+            if counts["moderation_log"]:
+                target.exec_driver_sql(
+                    "SELECT setval(pg_get_serial_sequence('moderation_log', 'id'), MAX(id)) "
+                    "FROM moderation_log"
+                )
 
     return counts
 

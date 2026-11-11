@@ -9,6 +9,9 @@ SQLITE_TABLES = (
     "CREATE TABLE IF NOT EXISTS moderation_log (id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, "
     "user_id INTEGER, actor_id INTEGER, action TEXT NOT NULL, detail TEXT NOT NULL, "
     "created_at INTEGER NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS ix_moderation_log_chat_id ON moderation_log (chat_id, id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_moderation_appeal ON moderation_log (chat_id, user_id, action) "
+    "WHERE action LIKE 'appeal:%'",
     "CREATE TABLE IF NOT EXISTS reputation_votes (chat_id INTEGER NOT NULL, "
     "voter_id INTEGER NOT NULL, user_id INTEGER NOT NULL, day INTEGER NOT NULL, "
     "PRIMARY KEY (chat_id, voter_id, user_id, day))",
@@ -138,10 +141,13 @@ class FeatureStorage:
                 "AND action IN ('warn', 'mute', 'tempban', 'ban', 'autoban', 'strike_mute', 'strike_ban')",
                 (chat_id, case_id, user_id),
             ).fetchone()
-        if case is None:
-            return False
-        self.audit(chat_id, action, user_id, detail=reason)
-        return True
+            if case is None:
+                return False
+            return self.database.execute(
+                "INSERT INTO moderation_log (chat_id, user_id, action, detail, created_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                (chat_id, user_id, action, reason[:500], int(time.time())),
+            ).rowcount == 1
 
     def registered_groups(self):
         with self.database:

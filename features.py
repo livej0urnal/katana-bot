@@ -10,7 +10,10 @@ DOMAIN = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9
 def domain_of(value: str) -> str | None:
     try:
         parsed = urlsplit(value if "://" in value else "//" + value)
-        if parsed.scheme not in {"", "http", "https"} or not parsed.hostname:
+        if (
+            parsed.scheme not in {"", "http", "https"}
+            or not parsed.hostname or parsed.username is not None
+        ):
             return None
         hostname = parsed.hostname.rstrip(".").encode("idna").decode().lower()
         return hostname if DOMAIN.fullmatch(hostname) else None
@@ -54,3 +57,9 @@ class TrafficWindow:
         events.append((now, event_id, normalized))
         repeats = sum(value == normalized for _, _, value in events) if normalized else 0
         return len(events) >= self.limit or repeats >= 3
+
+
+async def record_traffic(redis_traffic, namespace, window, key, event_id, text="") -> bool:
+    if redis_traffic is None:
+        return window.record(key, event_id, text)
+    return await redis_traffic.record(namespace, window, key, event_id, text)
