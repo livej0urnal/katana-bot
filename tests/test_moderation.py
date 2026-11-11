@@ -103,10 +103,12 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(contains_profanity("Вот БЛЯТЬ!"))
         self.assertTrue(contains_profanity("Это хуйня."))
         self.assertTrue(contains_profanity("This is BULLSHIT."))
+        self.assertTrue(contains_profanity("WTF?!"))
+        self.assertFalse(contains_profanity("wtforms"))
         self.assertFalse(contains_profanity("страхуй, хлеб, class, assignment"))
 
     def test_detects_masked_profanity_and_group_examples(self):
-        for text in ("F*uck", "f*ck", "f**k", "F•uck", "От дідько", "Це піздець", "Пиздобол"):
+        for text in ("F*uck", "f*ck", "F*k", "f**k", "F•uck", "От дідько", "Це піздець", "Пиздобол"):
             with self.subTest(text=text):
                 self.assertTrue(contains_profanity(text))
         for text in ("class*assignment", "fire*truck", "f*lock", "пі́зня зустріч", "підземний"):
@@ -118,6 +120,36 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(text=text):
                 self.assertTrue(contains_profanity(text))
         for text in ("бл**дный", "бледный", "колебать", "гребааать", "бл**дьё"):
+            with self.subTest(text=text):
+                self.assertFalse(contains_profanity(text))
+
+    def test_detects_additional_russian_words_without_matching_word_fragments(self):
+        for text in ("Х*й", "Х**й!", "Залупа", "Манда", "Хер", "Хрен", "Пидарас", "пидорасом", "уебок", "уёбок"):
+            with self.subTest(text=text):
+                self.assertTrue(contains_profanity(text))
+        for text in ("мандат", "команда", "мандарин", "страхуй", "Херцег-Нови", "хреновина"):
+            with self.subTest(text=text):
+                self.assertFalse(contains_profanity(text))
+
+    def test_detects_one_typo_in_selected_words(self):
+        for text in ("пиздце", "пизец", "пиздеэц", "пидарс", "долбаёб"):
+            with self.subTest(text=text):
+                self.assertTrue(contains_profanity(text))
+        for text in ("пиджак", "пицца", "победец", "колебать", "долбоносик"):
+            with self.subTest(text=text):
+                self.assertFalse(contains_profanity(text))
+
+    def test_detects_all_examples_from_the_group(self):
+        words = ("Хер", "Хрен", "Пидарас", "Убебок", "Убёбок", "Уёбок", "Уебок", "п*дарас")
+        for word in words:
+            with self.subTest(word=word):
+                self.assertTrue(contains_profanity(word))
+
+    def test_wildcards_match_dictionary_forms_without_per_word_rules(self):
+        for text in ("п*з*ец", "за*бал", "зал**а", "м*нда", "пизд**", "**здец", "bulls**t"):
+            with self.subTest(text=text):
+                self.assertTrue(contains_profanity(text))
+        for text in ("***", "**ман**", "ма*ндат", "п*джак", "2*3", "сло*во", "х*р"):
             with self.subTest(text=text):
                 self.assertFalse(contains_profanity(text))
 
