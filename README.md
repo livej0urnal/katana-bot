@@ -93,12 +93,41 @@ GitHub Actions запускает тесты при каждом push и pull re
 
 Рабочая база `katana.sqlite3` создаётся рядом с `main.py`. Файл `.env` и рабочая база исключены из Git.
 
+## PostgreSQL и перенос данных
+
+При пустом `DATABASE_URL` бот продолжает работать с SQLite. Для PostgreSQL используется драйвер psycopg через SQLAlchemy 2, а схему создаёт Alembic.
+
+1. Остановите бота в PyCharm. Установите новые зависимости и добавьте в существующий `.env` следующие параметры, сохранив `BOT_TOKEN`. Замените `YOUR_LOCAL_PASSWORD` одним и тем же локальным паролем в обеих строках. Для примера подойдёт пароль из букв и цифр. Спецсимволы в URL нужно кодировать.
+
+   ```dotenv
+   POSTGRES_PASSWORD=YOUR_LOCAL_PASSWORD
+   DATABASE_URL=postgresql+psycopg://katana:YOUR_LOCAL_PASSWORD@127.0.0.1:5433/katana
+   ```
+
+2. Запустите Docker Desktop, затем выполните команды из папки проекта.
+
+   ```bash
+   .venv/bin/python -m pip install -r requirements.txt
+   docker compose up -d --wait postgres
+   .venv/bin/python -m alembic upgrade head
+   ```
+
+3. Для переноса с SQLite запустите импорт один раз до первого запуска бота с PostgreSQL.
+
+   ```bash
+   .venv/bin/python import_sqlite.py katana.sqlite3
+   ```
+
+   Импорт читает SQLite без записи, переносит реестр групп, фильтры, жалобы и счётчики и печатает количество строк по каждой таблице. Целевая база должна быть пустой. Исходный файл остаётся на месте.
+
+4. Запустите `main.py` и проверьте `/settings` и `/reports` в тестовой группе. Чтобы вернуться к SQLite, остановите бота и очистите `DATABASE_URL`. Изменения, сделанные после переключения в PostgreSQL, в SQLite автоматически не появятся.
+
 ## Дорожная карта
 
 ### Основа бота
 
 - [x] Структура Python-проекта и конфигурация.
-- [ ] PostgreSQL и миграции Alembic.
+- [ ] PostgreSQL и миграции Alembic. Схема и импорт добавлены, переключение тестового бота предстоит проверить.
 - [x] Регистрация групп и проверка прав бота.
 - [x] Команды `/start`, `/help` и `/settings`.
 

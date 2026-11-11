@@ -1,14 +1,19 @@
-import sqlite3
 import time
+
+from feature_storage import FeatureStorage, SQLITE_TABLES
 
 
 AUTOBAN_WINDOW_SECONDS = 24 * 60 * 60
 
 
-class ChatSettings:
-    def __init__(self, database: sqlite3.Connection) -> None:
+class ChatSettings(FeatureStorage):
+    def __init__(self, database, *, initialize: bool = True) -> None:
         self.database = database
+        if not initialize:
+            return
         with database:
+            for statement in SQLITE_TABLES:
+                database.execute(statement)
             database.execute(
                 "CREATE TABLE IF NOT EXISTS groups ("
                 "chat_id INTEGER PRIMARY KEY, title TEXT NOT NULL, "
@@ -48,14 +53,15 @@ class ChatSettings:
             )
 
     def autoban_enabled(self, chat_id: int) -> bool:
-        return self.database.execute(
-            "SELECT 1 FROM autoban WHERE chat_id = ?", (chat_id,)
-        ).fetchone() is not None
+        with self.database:
+            return self.database.execute(
+                "SELECT 1 FROM autoban WHERE chat_id = ?", (chat_id,)
+            ).fetchone() is not None
 
     def set_autoban(self, chat_id: int, enabled: bool) -> None:
         with self.database:
             if enabled:
-                self.database.execute("INSERT OR IGNORE INTO autoban VALUES (?)", (chat_id,))
+                self.database.execute("INSERT INTO autoban (chat_id) VALUES (?) ON CONFLICT DO NOTHING", (chat_id,))
             else:
                 self.database.execute("DELETE FROM autoban WHERE chat_id = ?", (chat_id,))
                 self.database.execute("DELETE FROM profanity_strikes WHERE chat_id = ?", (chat_id,))
@@ -68,7 +74,7 @@ class ChatSettings:
                 (now - AUTOBAN_WINDOW_SECONDS,),
             )
             result = self.database.execute(
-                "INSERT OR IGNORE INTO profanity_strikes VALUES (?, ?, ?, ?)",
+                "INSERT INTO profanity_strikes VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                 (chat_id, user_id, message_id, now),
             )
             if result.rowcount == 0:
@@ -86,10 +92,11 @@ class ChatSettings:
             )
 
     def profanity_mode(self, chat_id: int) -> str:
-        row = self.database.execute(
-            "SELECT mode FROM profanity_settings WHERE chat_id = ?", (chat_id,)
-        ).fetchone()
-        return row[0] if row else "off"
+        with self.database:
+            row = self.database.execute(
+                "SELECT mode FROM profanity_settings WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+            return row[0] if row else "off"
 
     def set_profanity_mode(self, chat_id: int, mode: str) -> None:
         with self.database:
@@ -107,29 +114,32 @@ class ChatSettings:
     def report(self, chat_id: int, message_id: int, reporter_id: int, excerpt: str) -> bool:
         with self.database:
             result = self.database.execute(
-                "INSERT OR IGNORE INTO reports VALUES (?, ?, ?, ?)",
+                "INSERT INTO reports (chat_id, message_id, reporter_id, excerpt) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                 (chat_id, message_id, reporter_id, excerpt),
             )
         return result.rowcount == 1
 
     def recent_reports(self, chat_id: int) -> list[tuple[int, int, str]]:
-        return self.database.execute(
-            "SELECT message_id, COUNT(*), MAX(excerpt) FROM reports "
-            "WHERE chat_id = ? GROUP BY message_id ORDER BY MAX(rowid) DESC LIMIT 10",
-            (chat_id,),
-        ).fetchall()
+        with self.database:
+            return self.database.execute(
+                "SELECT message_id, COUNT(*), MAX(excerpt) FROM reports "
+                "WHERE chat_id = ? GROUP BY message_id ORDER BY MAX(rowid) DESC LIMIT 10",
+                (chat_id,),
+            ).fetchall()
 
     def links_blocked(self, chat_id: int) -> bool:
-        row = self.database.execute(
-            "SELECT 1 FROM link_filter WHERE chat_id = ?", (chat_id,)
-        ).fetchone()
-        return row is not None
+        with self.database:
+            row = self.database.execute(
+                "SELECT 1 FROM link_filter WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+            return row is not None
 
     def set_links_blocked(self, chat_id: int, enabled: bool) -> None:
         with self.database:
             if enabled:
                 self.database.execute(
-                    "INSERT OR IGNORE INTO link_filter (chat_id) VALUES (?)",
+                    "INSERT INTO link_filter (chat_id) VALUES (?) ON CONFLICT DO NOTHING",
                     (chat_id,),
                 )
             else:
@@ -141,20 +151,24 @@ class ChatSettings:
         with self.database:
             self.database.execute("DELETE FROM groups WHERE chat_id = ?", (old_id,))
             self.database.execute(
-                "INSERT OR IGNORE INTO link_filter (chat_id) "
-                "SELECT ? FROM link_filter WHERE chat_id = ?",
+                "INSERT INTO link_filter (chat_id) "
+                "SELECT ? FROM link_filter WHERE chat_id = ? ON CONFLICT DO NOTHING",
                 (new_id, old_id),
             )
             self.database.execute(
                 "DELETE FROM link_filter WHERE chat_id = ?", (old_id,)
             )
             self.database.execute(
-                "UPDATE OR IGNORE reports SET chat_id = ? WHERE chat_id = ?",
-                (new_id, old_id),
+                "UPDATE reports SET chat_id = ? WHERE chat_id = ? AND NOT EXISTS ("
+                "SELECT 1 FROM reports AS destination WHERE destination.chat_id = ? "
+                "AND destination.message_id = reports.message_id "
+                "AND destination.reporter_id = reports.reporter_id)",
+                (new_id, old_id, new_id),
             )
             self.database.execute("DELETE FROM reports WHERE chat_id = ?", (old_id,))
             self.database.execute(
-                "UPDATE OR IGNORE profanity_settings SET chat_id = ? WHERE chat_id = ?",
+                "INSERT INTO profanity_settings (chat_id, mode) "
+                "SELECT ?, mode FROM profanity_settings WHERE chat_id = ? ON CONFLICT DO NOTHING",
                 (new_id, old_id),
             )
             self.database.execute(
