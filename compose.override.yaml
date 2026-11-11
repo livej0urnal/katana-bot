@@ -1,0 +1,17 @@
+services:
+  bot:
+    init: true
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - .:/app:ro
+    command:
+      - watchfiles
+      - --target-type
+      - command
+      - --filter
+      - python
+      - --ignore-paths
+      - /app/.venv,/app/.git,/app/.idea,/app/tests
+      - python main.py
+      - /app

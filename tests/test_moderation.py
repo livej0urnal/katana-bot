@@ -105,6 +105,22 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(contains_profanity("This is BULLSHIT."))
         self.assertFalse(contains_profanity("страхуй, хлеб, class, assignment"))
 
+    def test_detects_masked_profanity_and_group_examples(self):
+        for text in ("F*uck", "f*ck", "f**k", "F•uck", "От дідько", "Це піздець", "Пиздобол"):
+            with self.subTest(text=text):
+                self.assertTrue(contains_profanity(text))
+        for text in ("class*assignment", "fire*truck", "f*lock", "пі́зня зустріч", "підземний"):
+            with self.subTest(text=text):
+                self.assertFalse(contains_profanity(text))
+
+    def test_detects_masked_and_elongated_russian_profanity(self):
+        for text in ("Бл**дь", "Бл**д", "БЛ•ТЬ", "Пошел нахер", "Еееееебаааать!", "Е*ееееебаааать!"):
+            with self.subTest(text=text):
+                self.assertTrue(contains_profanity(text))
+        for text in ("бл**дный", "бледный", "колебать", "гребааать", "бл**дьё"):
+            with self.subTest(text=text):
+                self.assertFalse(contains_profanity(text))
+
     async def test_profanity_is_logged_before_switching_to_deletion(self):
         self.message.caption = "Это, блять, тест."
         self.settings.set_profanity_mode(-1001, "log")

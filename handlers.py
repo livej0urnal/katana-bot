@@ -461,10 +461,13 @@ async def moderate_message(
         reason = "new_user_spam"
     if not reason and check_ai:
         label = await ai_analysis.text_label(chat_id, getattr(message, "message_thread_id", None), text)
-        if label and label != "ok":
+        if label and label != "ok" and (label != "profanity" or mode != "off"):
             settings.audit(chat_id, "ai_signal", user_id, detail=f"{label} · {message.message_id}")
             if ai_mode == "delete":
-                reason = label
+                if label != "profanity":
+                    reason = label
+                elif mode == "delete":
+                    reason = "ai_profanity"
     if not reason and check_image:
         if await ai_analysis.image_label(bot, photos[-1]) == "nsfw":
             settings.audit(chat_id, "nsfw_signal", user_id, detail=str(message.message_id))

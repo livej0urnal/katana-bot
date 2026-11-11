@@ -111,15 +111,17 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_profanity_is_moderated_without_setup_command(self):
         await self.send("This is bullshit.", ADMIN)
         removed = await self.send("This is bullshit.")
+        masked = await self.send("Бл**дь")
+        elongated = await self.send("Еееееебаааать")
         await self.send("This is ordinary text.")
         self.assertEqual(
             [call.message_id for call in self.session.methods("deleteMessage")],
-            [removed["message_id"]],
+            [item["message_id"] for item in (removed, masked, elongated)],
         )
         await self.send("/profanity off", ADMIN)
         self.settings = ChatSettings(self.settings.database)
         await self.send("This is bullshit.")
-        self.assertEqual(len(self.session.methods("deleteMessage")), 1)
+        self.assertEqual(len(self.session.methods("deleteMessage")), 3)
 
     async def test_cleanup_and_restore_are_admin_only_and_repost_once(self):
         await self.send("/profanity log", ADMIN)
@@ -143,6 +145,21 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [call.text for call in self.session.methods("sendMessage")].count(removed["text"]), 1
         )
+
+    async def test_ai_profanity_supports_log_and_delete_without_dictionary_autoban(self):
+        self.ai.text_label.return_value = "profanity"
+        await self.send("/autoban on", ADMIN)
+        await self.send("/protect ai log", ADMIN)
+        await self.send("AI-only fixture")
+        self.assertFalse(self.session.methods("deleteMessage"))
+        await self.send("/protect ai delete", ADMIN)
+        for _ in range(3):
+            await self.send("AI-only fixture")
+        self.assertEqual(len(self.session.methods("deleteMessage")), 3)
+        self.assertFalse(self.session.methods("banChatMember"))
+        await self.send("/profanity off", ADMIN)
+        await self.send("AI-only fixture")
+        self.assertEqual(len(self.session.methods("deleteMessage")), 3)
 
     async def test_routed_filters_allowlists_comments_and_edited_messages(self):
         await self.send("/links on", ADMIN)

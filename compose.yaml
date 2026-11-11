@@ -11,6 +11,20 @@ services:
       OLLAMA_URL: ${KATANA_DOCKER_OLLAMA_URL:-http://ollama:11434}
     volumes:
       - bot_data:/data
+    develop:
+      watch:
+        - action: rebuild
+          path: .
+          include:
+            - "*.py"
+            - Dockerfile
+            - requirements.txt
+            - requirements-redis.txt
+            - alembic.ini
+            - "migrations/**"
+          ignore:
+            - "**/__pycache__/"
+            - "**/*.pyc"
 
   postgres:
     image: postgres:17
