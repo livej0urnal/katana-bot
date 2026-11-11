@@ -13,3 +13,6 @@ __pycache__/
 
 # Local database and SQLite sidecar files
 *.sqlite3*
+
+# Image generation originals
+/generated_images/
