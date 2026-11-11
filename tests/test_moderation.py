@@ -4,9 +4,9 @@ from contextlib import closing
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from aiogram.enums import ChatMemberStatus, MessageEntityType
+from aiogram.enums import ChatMemberStatus, ChatType, MessageEntityType
 
-from main import ChatSettings, filter_links, remove_by_reply
+from main import ChatSettings, filter_links, remove_by_reply, report_message, show_reports
 from moderation import contains_link
 
 
@@ -33,6 +33,18 @@ class SettingsTests(unittest.TestCase):
 
             self.assertFalse(settings.links_blocked(-1001))
             self.assertTrue(settings.links_blocked(-1002))
+
+    def test_reports_are_deduplicated_and_migrate_with_the_group(self):
+        with closing(sqlite3.connect(":memory:")) as database:
+            settings = ChatSettings(database)
+            self.assertTrue(settings.report(-1001, 42, 7, "Текст"))
+            self.assertFalse(settings.report(-1001, 42, 7, "Текст"))
+            self.assertTrue(settings.report(-1001, 42, 8, "Текст"))
+
+            settings.migrate(-1001, -1002)
+
+            self.assertEqual(settings.recent_reports(-1001), [])
+            self.assertEqual(settings.recent_reports(-1002), [(42, 2, "Текст")])
 
 
 class ModerationTests(unittest.IsolatedAsyncioTestCase):
@@ -97,3 +109,29 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
 
         self.bot.delete_message.assert_not_awaited()
         command.reply.assert_awaited_once()
+
+    async def test_report_uses_replied_message(self):
+        self.message.from_user.is_bot = False
+        self.message.reply_to_message = SimpleNamespace(
+            message_id=71, text=None, caption="Фото с подписью"
+        )
+
+        await report_message(self.message, self.settings)
+
+        self.assertEqual(self.settings.recent_reports(-1001), [(71, 1, "Фото с подписью")])
+
+    async def test_reports_are_sent_only_to_admin_in_private(self):
+        self.message.chat.type = ChatType.SUPERGROUP
+        self.settings.report(-1001, 42, 7, "Тестовая жалоба")
+        self.bot.send_message = AsyncMock()
+
+        await show_reports(self.message, self.bot, self.settings)
+        self.bot.send_message.assert_not_awaited()
+
+        self.bot.get_chat_member.return_value.status = ChatMemberStatus.ADMINISTRATOR
+        await show_reports(self.message, self.bot, self.settings)
+
+        recipient_id, report_text = self.bot.send_message.await_args.args
+        self.assertEqual(recipient_id, self.message.from_user.id)
+        self.assertIn("Тестовая жалоба", report_text)
+        self.message.reply.assert_awaited_once_with("Отправил список жалоб в личку.")

@@ -28,6 +28,27 @@ class ChatSettings:
             database.execute(
                 "CREATE TABLE IF NOT EXISTS link_filter (chat_id INTEGER PRIMARY KEY)"
             )
+            database.execute(
+                "CREATE TABLE IF NOT EXISTS reports ("
+                "chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, "
+                "reporter_id INTEGER NOT NULL, excerpt TEXT NOT NULL, "
+                "PRIMARY KEY (chat_id, message_id, reporter_id))"
+            )
+
+    def report(self, chat_id: int, message_id: int, reporter_id: int, excerpt: str) -> bool:
+        with self.database:
+            result = self.database.execute(
+                "INSERT OR IGNORE INTO reports VALUES (?, ?, ?, ?)",
+                (chat_id, message_id, reporter_id, excerpt),
+            )
+        return result.rowcount == 1
+
+    def recent_reports(self, chat_id: int) -> list[tuple[int, int, str]]:
+        return self.database.execute(
+            "SELECT message_id, COUNT(*), MAX(excerpt) FROM reports "
+            "WHERE chat_id = ? GROUP BY message_id ORDER BY MAX(rowid) DESC LIMIT 10",
+            (chat_id,),
+        ).fetchall()
 
     def links_blocked(self, chat_id: int) -> bool:
         row = self.database.execute(
@@ -57,6 +78,11 @@ class ChatSettings:
             self.database.execute(
                 "DELETE FROM link_filter WHERE chat_id = ?", (old_id,)
             )
+            self.database.execute(
+                "UPDATE OR IGNORE reports SET chat_id = ? WHERE chat_id = ?",
+                (new_id, old_id),
+            )
+            self.database.execute("DELETE FROM reports WHERE chat_id = ?", (old_id,))
 
 
 async def is_admin(message: Message, bot: Bot) -> bool:
@@ -97,7 +123,9 @@ async def show_help(message: Message, settings: ChatSettings) -> None:
         f"Katana Bot. Фильтр ссылок {status}.\n"
         "/links on — включить фильтр ссылок\n"
         "/links off — выключить фильтр ссылок\n"
-        "/del — удалить сообщение, ответив на него этой командой"
+        "/del — удалить сообщение, ответив на него этой командой\n"
+        "/report — пожаловаться на сообщение ответом\n"
+        "/reports — получить последние жалобы в личку (для администраторов)"
     )
 
 
@@ -145,6 +173,51 @@ async def remove_by_reply(message: Message, bot: Bot) -> None:
         await message.reply("Telegram отклонил удаление. Проверьте права бота и возраст сообщения.")
     else:
         await delete_message(message, bot)
+
+
+@router.message(Command("report"))
+async def report_message(message: Message, settings: ChatSettings) -> None:
+    reporter = message.from_user
+    if reporter is None or reporter.is_bot or message.sender_chat is not None:
+        await message.reply("Отправьте жалобу от своего аккаунта.")
+        return
+
+    target = message.reply_to_message
+    if target is None:
+        await message.reply("Ответьте командой /report на сообщение или комментарий.")
+        return
+
+    excerpt = " ".join((target.text or target.caption or "[вложение]").split())[:120]
+    created = settings.report(message.chat.id, target.message_id, reporter.id, excerpt)
+    await message.reply("Жалоба принята." if created else "Вы уже пожаловались на это сообщение.")
+
+
+@router.message(Command("reports"))
+async def show_reports(message: Message, bot: Bot, settings: ChatSettings) -> None:
+    if message.sender_chat is not None or message.from_user is None:
+        await message.reply("Чтобы получить жалобы в личку, отправьте /reports от своего аккаунта.")
+        return
+    if not await is_admin(message, bot):
+        return
+
+    lines = ["Последние жалобы:"]
+    for message_id, count, excerpt in settings.recent_reports(message.chat.id):
+        reference = f"Сообщение {message_id}"
+        if message.chat.type == ChatType.SUPERGROUP:
+            internal_id = str(message.chat.id).removeprefix("-100")
+            reference = f"https://t.me/c/{internal_id}/{message_id}"
+        lines.append(f"{reference} · жалоб: {count}\n{excerpt}")
+
+    try:
+        await bot.send_message(
+            message.from_user.id,
+            "\n\n".join(lines) if len(lines) > 1 else "В этой группе жалоб пока нет.",
+            link_preview_options={"is_disabled": True},
+        )
+    except (TelegramForbiddenError, TelegramBadRequest):
+        await message.reply("Откройте личный чат с ботом, нажмите Start и повторите /reports.")
+    else:
+        await message.reply("Отправил список жалоб в личку.")
 
 
 @router.message(F.text.is_not(None) | F.caption.is_not(None))
