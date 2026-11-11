@@ -10,6 +10,11 @@ class ChatSettings:
         self.database = database
         with database:
             database.execute(
+                "CREATE TABLE IF NOT EXISTS groups ("
+                "chat_id INTEGER PRIMARY KEY, title TEXT NOT NULL, "
+                "chat_type TEXT NOT NULL, bot_status TEXT NOT NULL)"
+            )
+            database.execute(
                 "CREATE TABLE IF NOT EXISTS link_filter (chat_id INTEGER PRIMARY KEY)"
             )
             database.execute(
@@ -31,6 +36,15 @@ class ChatSettings:
                 "chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
                 "message_id INTEGER NOT NULL, recorded_at INTEGER NOT NULL, "
                 "PRIMARY KEY (chat_id, user_id, message_id))"
+            )
+
+    def register_group(self, chat_id: int, title: str, chat_type: str, bot_status: str) -> None:
+        with self.database:
+            self.database.execute(
+                "INSERT INTO groups (chat_id, title, chat_type, bot_status) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (chat_id) DO UPDATE SET title = excluded.title, "
+                "chat_type = excluded.chat_type, bot_status = excluded.bot_status",
+                (chat_id, title, chat_type, bot_status),
             )
 
     def autoban_enabled(self, chat_id: int) -> bool:
@@ -125,6 +139,7 @@ class ChatSettings:
 
     def migrate(self, old_id: int, new_id: int) -> None:
         with self.database:
+            self.database.execute("DELETE FROM groups WHERE chat_id = ?", (old_id,))
             self.database.execute(
                 "INSERT OR IGNORE INTO link_filter (chat_id) "
                 "SELECT ? FROM link_filter WHERE chat_id = ?",

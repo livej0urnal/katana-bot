@@ -5,7 +5,7 @@ from aiogram.enums import ChatMemberStatus, ChatType
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.filters.command import CommandObject
-from aiogram.types import Message
+from aiogram.types import ChatMemberUpdated, Message
 
 from moderation import contains_link, contains_profanity
 from storage import ChatSettings
@@ -20,6 +20,21 @@ pending_autobans: set[tuple[int, int]] = set()
 group = F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP})
 group_router.message.filter(group)
 group_router.edited_message.filter(group)
+
+
+@router.message(F.chat.type == ChatType.PRIVATE, Command("start", "help"))
+async def private_help(message: Message) -> None:
+    await message.answer(
+        "Katana Moderator защищает группы и комментарии к каналам.\n"
+        "Добавьте бота администратором в группу и отправьте там /settings.\n"
+        "Чтобы получить жалобы в этот чат, отправьте /reports в группе, которой управляете."
+    )
+
+
+@router.my_chat_member(group)
+async def register_membership(event: ChatMemberUpdated, settings: ChatSettings) -> None:
+    chat = event.chat
+    settings.register_group(chat.id, chat.title or str(chat.id), chat.type, event.new_chat_member.status)
 
 
 async def is_admin(message: Message, bot: Bot) -> bool:
@@ -53,7 +68,7 @@ async def migrate_settings(message: Message, settings: ChatSettings) -> None:
         settings.migrate(message.migrate_from_chat_id, message.chat.id)
 
 
-@group_router.message(Command("katana"))
+@group_router.message(Command("katana", "start", "help"))
 async def show_help(message: Message, settings: ChatSettings) -> None:
     status = "включён" if settings.links_blocked(message.chat.id) else "выключен"
     await message.reply(
@@ -68,17 +83,45 @@ async def show_help(message: Message, settings: ChatSettings) -> None:
         "/ban — забанить автора сообщения ответом\n"
         "/unban ID — разрешить пользователю снова вступить\n"
         f"/autoban on|off — автобан ({'включён' if settings.autoban_enabled(message.chat.id) else 'выключен'})"
+        "\n/settings — настройки группы и права бота (для администраторов)"
+    )
+
+
+def member_can_delete(member, chat_type: ChatType) -> bool:
+    return member.status == ChatMemberStatus.CREATOR or (
+        member.status == ChatMemberStatus.ADMINISTRATOR
+        and (
+            chat_type == ChatType.GROUP
+            or getattr(member, "can_delete_messages", False)
+        )
     )
 
 
 async def can_delete_messages(message: Message, bot: Bot) -> bool:
     member = await bot.get_chat_member(message.chat.id, bot.id)
-    return member.status == ChatMemberStatus.CREATOR or (
-        member.status == ChatMemberStatus.ADMINISTRATOR
-        and (
-            message.chat.type == ChatType.GROUP
-            or getattr(member, "can_delete_messages", False)
-        )
+    return member_can_delete(member, message.chat.type)
+
+
+@group_router.message(Command("settings"))
+async def show_settings(message: Message, bot: Bot, settings: ChatSettings) -> None:
+    if not await is_admin(message, bot):
+        return
+
+    chat = message.chat
+    member = await bot.get_chat_member(chat.id, bot.id)
+    settings.register_group(chat.id, chat.title or str(chat.id), chat.type, member.status)
+    admin = member.status == ChatMemberStatus.ADMINISTRATOR
+    can_delete = member_can_delete(member, chat.type)
+    can_restrict = admin and getattr(member, "can_restrict_members", False)
+
+    await message.reply(
+        f"Настройки группы «{chat.title or chat.id}»\n"
+        f"Бот администратор: {'да' if admin else 'нет'}\n"
+        f"Удаление сообщений: {'да' if can_delete else 'нет'}\n"
+        f"Блокировка участников: {'да' if can_restrict else 'нет'}\n"
+        f"Фильтр ссылок: {'включён' if settings.links_blocked(chat.id) else 'выключен'}\n"
+        f"Фильтр мата: {settings.profanity_mode(chat.id)}\n"
+        f"Автобан: {'включён' if settings.autoban_enabled(chat.id) else 'выключен'}"
     )
 
 

@@ -9,9 +9,11 @@ from aiogram.filters import CommandObject
 
 from handlers import (
     moderate_message,
+    register_membership,
     remove_by_reply,
     report_message,
     show_reports,
+    show_settings,
     unban_member,
 )
 from moderation import contains_link, contains_profanity
@@ -19,6 +21,16 @@ from storage import ChatSettings
 
 
 class SettingsTests(unittest.TestCase):
+    def test_membership_updates_existing_group(self):
+        with closing(sqlite3.connect(":memory:")) as database:
+            settings = ChatSettings(database)
+            settings.register_group(-1001, "Test", ChatType.SUPERGROUP, ChatMemberStatus.MEMBER)
+            settings.register_group(-1001, "Updated", ChatType.SUPERGROUP, ChatMemberStatus.LEFT)
+            self.assertEqual(
+                database.execute("SELECT chat_id, title, bot_status FROM groups").fetchall(),
+                [(-1001, "Updated", "left")],
+            )
+
     def test_filter_settings_are_independent_for_each_chat(self):
         with closing(sqlite3.connect(":memory:")) as database:
             settings = ChatSettings(database)
@@ -197,3 +209,38 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recipient_id, self.message.from_user.id)
         self.assertIn("Тестовая жалоба", report_text)
         self.message.reply.assert_awaited_once_with("Отправил список жалоб в личку.")
+
+    async def test_settings_require_admin_and_display_current_bot_rights(self):
+        self.message.chat.type = ChatType.SUPERGROUP
+        self.message.chat.title = "Test"
+        self.bot.id = 9
+        self.settings.set_profanity_mode(-1001, "log")
+        await show_settings(self.message, self.bot, self.settings)
+        self.message.reply.assert_not_awaited()
+
+        bot_membership = SimpleNamespace(
+            status=ChatMemberStatus.ADMINISTRATOR,
+            can_delete_messages=True,
+            can_restrict_members=False,
+        )
+        self.bot.get_chat_member.side_effect = [
+            SimpleNamespace(status=ChatMemberStatus.CREATOR),
+            bot_membership,
+        ]
+        await show_settings(self.message, self.bot, self.settings)
+        reply = self.message.reply.await_args.args[0]
+        self.assertIn("Удаление сообщений: да", reply)
+        self.assertIn("Блокировка участников: нет", reply)
+        self.assertIn("Фильтр мата: log", reply)
+
+        await register_membership(
+            SimpleNamespace(
+                chat=self.message.chat,
+                new_chat_member=SimpleNamespace(status=ChatMemberStatus.KICKED),
+            ),
+            self.settings,
+        )
+        self.assertEqual(
+            self.settings.database.execute("SELECT bot_status FROM groups").fetchall(),
+            [("kicked",)],
+        )
