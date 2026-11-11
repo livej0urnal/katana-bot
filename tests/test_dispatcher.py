@@ -209,3 +209,27 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             Counter(dict(self.settings.action_totals(CHAT["id"]))),
             Counter(captcha=1, captcha_passed=1, spam_signal=1, ai_signal=1, nsfw_signal=1, delete=1),
         )
+
+    async def test_routed_flood_autoban_and_shadow_mode(self):
+        sender = MEMBER | {"id": 199}
+        await self.send("/protect flood on", sender)
+        self.assertEqual(self.settings.option(CHAT["id"], "flood"), "off")
+        await self.send("/protect flood on", ADMIN)
+        await self.send("Repeated fixture", sender)
+        await self.send("Repeated fixture", sender)
+        third = await self.send("Repeated fixture", sender)
+        self.assertEqual(
+            [call.message_id for call in self.session.methods("deleteMessage")],
+            [third["message_id"]],
+        )
+
+        await self.send("/protect flood off", ADMIN)
+        await self.send("/profanity delete", ADMIN)
+        await self.send("/protect shadow on", ADMIN)
+        await self.send("/autoban on", ADMIN)
+        for _ in range(3):
+            await self.send("This is bullshit.", sender)
+        bans = self.session.methods("banChatMember")
+        self.assertEqual([call.user_id for call in bans], [sender["id"]])
+        self.assertNotIn("забанен", self.session.methods("sendMessage")[-1].text)
+        self.assertIn("autoban", dict(self.settings.action_totals(CHAT["id"])))
