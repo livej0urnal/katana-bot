@@ -1,10 +1,23 @@
 services:
+  bot:
+    build: .
+    profiles: ["bot"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SQLITE_PATH: /data/katana.sqlite3
+      DATABASE_URL: ${KATANA_DOCKER_DATABASE_URL:-}
+      REDIS_URL: ${KATANA_DOCKER_REDIS_URL:-}
+      OLLAMA_URL: ${KATANA_DOCKER_OLLAMA_URL:-http://ollama:11434}
+    volumes:
+      - bot_data:/data
+
   postgres:
     image: postgres:17
     environment:
       POSTGRES_DB: katana
       POSTGRES_USER: katana
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
@@ -35,5 +48,6 @@ services:
       retries: 12
 
 volumes:
+  bot_data:
   postgres_data:
   ollama_models:

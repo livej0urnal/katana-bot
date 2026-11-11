@@ -1,7 +1,12 @@
 import time
 
+from recovery import RETENTION
+
 
 SQLITE_TABLES = (
+    "CREATE TABLE IF NOT EXISTS moderation_recovery (chat_id INTEGER NOT NULL, "
+    "message_id INTEGER NOT NULL, payload TEXT NOT NULL, sent_at INTEGER NOT NULL, "
+    "updated_at INTEGER NOT NULL, state TEXT NOT NULL, PRIMARY KEY (chat_id, message_id))",
     "CREATE TABLE IF NOT EXISTS feature_options (chat_id INTEGER NOT NULL, "
     "name TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (chat_id, name))",
     "CREATE TABLE IF NOT EXISTS allowlist (chat_id INTEGER NOT NULL, kind TEXT NOT NULL, "
@@ -154,3 +159,84 @@ class FeatureStorage:
             return self.database.execute(
                 "SELECT chat_id, title, chat_type, bot_status FROM groups ORDER BY title LIMIT 200"
             ).fetchall()
+
+
+    def flag_removal(self, chat_id, message_id, payload, sent_at):
+        with self.database:
+            self.database.execute(
+                "INSERT INTO moderation_recovery VALUES (?, ?, ?, ?, ?, 'flagged') "
+                "ON CONFLICT (chat_id, message_id) DO UPDATE SET payload = excluded.payload, "
+                "updated_at = excluded.updated_at WHERE moderation_recovery.state = 'flagged'",
+                (chat_id, message_id, payload, sent_at, int(time.time())),
+            )
+
+    def clear_removal_flag(self, chat_id, message_id):
+        with self.database:
+            self.database.execute(
+                "DELETE FROM moderation_recovery WHERE chat_id = ? AND message_id = ? AND state = 'flagged'",
+                (chat_id, message_id),
+            )
+
+    def flagged_removals(self, chat_id, since):
+        with self.database:
+            return self.database.execute(
+                "SELECT message_id, payload, sent_at FROM moderation_recovery "
+                "WHERE chat_id = ? AND sent_at > ? AND state = 'flagged' "
+                "ORDER BY sent_at DESC, message_id DESC LIMIT 30",
+                (chat_id, since),
+            ).fetchall()
+
+    def stage_removal(self, chat_id, message_id, payload, sent_at, *, flagged_only=False):
+        with self.database:
+            if flagged_only:
+                return self.database.execute(
+                    "UPDATE moderation_recovery SET state = 'pending', updated_at = ? "
+                    "WHERE chat_id = ? AND message_id = ? AND state = 'flagged' AND payload = ?",
+                    (int(time.time()), chat_id, message_id, payload),
+                ).rowcount == 1
+            return self.database.execute(
+                "INSERT INTO moderation_recovery VALUES (?, ?, ?, ?, ?, 'pending') "
+                "ON CONFLICT (chat_id, message_id) DO UPDATE SET payload = excluded.payload, "
+                "updated_at = excluded.updated_at, state = 'pending' "
+                "WHERE moderation_recovery.state IN ('flagged', 'failed')",
+                (chat_id, message_id, payload, sent_at, int(time.time())),
+            ).rowcount == 1
+
+    def finish_removal(self, chat_id, message_id, deleted):
+        with self.database:
+            self.database.execute(
+                "UPDATE moderation_recovery SET state = ?, updated_at = ? "
+                "WHERE chat_id = ? AND message_id = ? AND state = 'pending'",
+                ("removed" if deleted else "failed", int(time.time()), chat_id, message_id),
+            )
+
+    def claim_restore(self, chat_id, message_id):
+        with self.database:
+            row = self.database.execute(
+                "UPDATE moderation_recovery SET state = 'restoring' "
+                "WHERE chat_id = ? AND message_id = ? AND state = 'removed' "
+                "AND updated_at > ? RETURNING payload",
+                (chat_id, message_id, int(time.time()) - RETENTION),
+            ).fetchone()
+            return row[0] if row else None
+
+    def finish_restore(self, chat_id, message_id, restored):
+        with self.database:
+            if restored:
+                self.database.execute(
+                    "DELETE FROM moderation_recovery WHERE chat_id = ? AND message_id = ? AND state = 'restoring'",
+                    (chat_id, message_id),
+                )
+            else:
+                self.database.execute(
+                    "UPDATE moderation_recovery SET state = 'removed' "
+                    "WHERE chat_id = ? AND message_id = ? AND state = 'restoring'",
+                    (chat_id, message_id),
+                )
+
+    def prune_recovery(self):
+        with self.database:
+            self.database.execute(
+                "DELETE FROM moderation_recovery WHERE updated_at <= ?",
+                (int(time.time()) - RETENTION,),
+            )

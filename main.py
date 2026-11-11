@@ -21,7 +21,8 @@ PROJECT_DIR = Path(__file__).resolve().parent
 @contextmanager
 def open_settings(database_url: str):
     if not database_url:
-        database = sqlite3.connect(PROJECT_DIR / "katana.sqlite3")
+        database_path = os.getenv("SQLITE_PATH") or PROJECT_DIR / "katana.sqlite3"
+        database = sqlite3.connect(database_path)
         try:
             yield ChatSettings(database)
         finally:

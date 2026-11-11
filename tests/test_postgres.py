@@ -35,9 +35,10 @@ class PostgresTests(unittest.TestCase):
                 import_database(source, engine),
                 {
                     "groups": 1, "link_filter": 1, "reports": 2,
-                    "profanity_settings": 1, "autoban": 1, "profanity_strikes": 1,
-                    "feature_options": 0, "allowlist": 0, "moderation_log": 0,
+                    "profanity_settings": 0, "autoban": 1, "profanity_strikes": 1,
+                    "feature_options": 1, "allowlist": 0, "moderation_log": 0,
                     "reputation_votes": 0, "announcements": 0,
+                    "moderation_recovery": 0,
                 },
             )
             with self.assertRaisesRegex(ValueError, "пустую"):

@@ -38,6 +38,8 @@ class TelegramSession(BaseSession):
         self.calls.append(method)
         if name == "getMe":
             return SimpleNamespace(**BOT)
+        if name == "getChat":
+            return SimpleNamespace(pinned_message=None)
         if name == "getChatMember":
             if method.user_id in {ADMIN["id"], BOT["id"]}:
                 return SimpleNamespace(
@@ -106,6 +108,42 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         await self.update("message", value)
         return value
 
+    async def test_profanity_is_moderated_without_setup_command(self):
+        await self.send("This is bullshit.", ADMIN)
+        removed = await self.send("This is bullshit.")
+        await self.send("This is ordinary text.")
+        self.assertEqual(
+            [call.message_id for call in self.session.methods("deleteMessage")],
+            [removed["message_id"]],
+        )
+        await self.send("/profanity off", ADMIN)
+        self.settings = ChatSettings(self.settings.database)
+        await self.send("This is bullshit.")
+        self.assertEqual(len(self.session.methods("deleteMessage")), 1)
+
+    async def test_cleanup_and_restore_are_admin_only_and_repost_once(self):
+        await self.send("/profanity log", ADMIN)
+        kept = await self.send("This is bullshit.")
+        await self.update("edited_message", kept | {"text": "Edited to remove profanity"})
+        removed = await self.send("This is bullshit.")
+
+        await self.send("/cleanup 30m")
+        self.assertFalse(self.session.methods("deleteMessage"))
+        await self.send("/cleanup 30m", ADMIN)
+        self.assertEqual(
+            [call.message_id for call in self.session.methods("deleteMessage")],
+            [removed["message_id"]],
+        )
+
+        command = f"/restore {removed['message_id']}"
+        await self.send(command)
+        self.assertNotIn(removed["text"], [call.text for call in self.session.methods("sendMessage")])
+        await self.send(command, ADMIN)
+        await self.send(command, ADMIN)
+        self.assertEqual(
+            [call.text for call in self.session.methods("sendMessage")].count(removed["text"]), 1
+        )
+
     async def test_routed_filters_allowlists_comments_and_edited_messages(self):
         await self.send("/links on", ADMIN)
         await self.send("/allow add domain example.com", ADMIN)
@@ -149,7 +187,7 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             chat={"id": MEMBER["id"], "type": "private"},
         ))
         await self.send("/mute 5", ADMIN, reply_to_message=target)
-        await self.send("/unmute", ADMIN, reply_to_message=target)
+        await self.send("/unmute 92", ADMIN)
         await self.send("/tempban 10", ADMIN, reply_to_message=target)
         await self.send("/ban", ADMIN, reply_to_message=target)
         await self.send("/unban 92", ADMIN)
@@ -194,6 +232,10 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertEqual(len(self.session.methods("restrictChatMember")), 2)
         self.assertEqual(len(self.session.methods("getUserProfilePhotos")), 6)
+        self.assertEqual(
+            [call.message_id for call in self.session.methods("deleteMessage")],
+            [callback_message["message_id"]],
+        )
 
         await self.send("Claim your free reward click now", newcomer)
         await self.send("/protect ai log", ADMIN)
@@ -204,7 +246,10 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         photo = await self.send(None, photo=[{
             "file_id": "photo", "file_unique_id": "photo", "width": 20, "height": 20, "file_size": 50,
         }])
-        self.assertEqual([call.message_id for call in self.session.methods("deleteMessage")], [photo["message_id"]])
+        self.assertEqual(
+            [call.message_id for call in self.session.methods("deleteMessage")],
+            [callback_message["message_id"], photo["message_id"]],
+        )
         self.assertEqual(
             Counter(dict(self.settings.action_totals(CHAT["id"]))),
             Counter(captcha=1, captcha_passed=1, spam_signal=1, ai_signal=1, nsfw_signal=1, delete=1),

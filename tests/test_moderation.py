@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 from aiogram.enums import ChatMemberStatus, ChatType, MessageEntityType
 from aiogram.filters import CommandObject
+from aiogram.types import MessageEntity
 
 from handlers import (
     moderate_message,
@@ -81,7 +82,9 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
             text=None,
             caption=None,
             entities=[],
-            caption_entities=[SimpleNamespace(type=MessageEntityType.TEXT_LINK)],
+            caption_entities=[MessageEntity(type=MessageEntityType.TEXT_LINK, offset=0, length=4,
+                                            url="https://example.net")],
+            photo=[SimpleNamespace(file_id="test-photo")],
             reply=AsyncMock(),
         )
         self.bot = SimpleNamespace(

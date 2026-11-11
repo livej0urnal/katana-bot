@@ -16,6 +16,7 @@ from aiogram.types import (
 from features import TrafficWindow, domain_of, has_untrusted_link, record_traffic
 from moderation import contains_link, contains_profanity
 from panel_auth import sign
+from recovery import DELETE_WINDOW, remove_saved, repost, sent_at, snapshot
 from spam_model import spam_probability
 from storage import ChatSettings
 
@@ -88,6 +89,8 @@ async def show_help(message: Message, settings: ChatSettings) -> None:
         "/links on — включить фильтр ссылок\n"
         "/links off — выключить фильтр ссылок\n"
         "/del — удалить сообщение, ответив на него этой командой\n"
+        "/cleanup 30m — удалить сообщения, отмеченные фильтром\n"
+        "/restore ID — вернуть копию удалённого сообщения\n"
         "/report — пожаловаться на сообщение ответом\n"
         "/reports — получить последние жалобы в личку (для администраторов)\n"
         "/profanity log|delete|off — режим фильтра мата\n"
@@ -227,11 +230,15 @@ async def remove_by_reply(message: Message, bot: Bot, settings: ChatSettings | N
         await message.reply("Ответьте командой /del на сообщение, которое нужно удалить.")
     elif target.is_automatic_forward:
         await message.reply("Пересланный пост открывает ветку комментариев и защищён от удаления.")
-    elif not await delete_message(target, bot):
-        await message.reply("Telegram отклонил удаление. Проверьте права бота и возраст сообщения.")
+    elif not await (
+        remove_saved(bot, settings, target.chat.id, target.message_id, snapshot(target), sent_at(target))
+        if settings is not None else delete_message(target, bot)
+    ):
+        await message.reply("Удаление не выполнено. Проверьте права бота, возраст и поддерживаемый тип сообщения.")
     else:
         if settings is not None:
             settings.audit(message.chat.id, "manual_delete", getattr(target.from_user, "id", None), detail=str(target.message_id))
+        await message.answer(f"Сообщение удалено. Восстановить копию: /restore {target.message_id}")
         await delete_message(message, bot)
 
 
@@ -377,6 +384,8 @@ async def moderate_message(
     message: Message, bot: Bot, settings: ChatSettings, event_update=None, ai_analysis=None, redis_traffic=None
 ) -> None:
     chat_id = message.chat.id
+    if event_update is not None and event_update.edited_message is not None:
+        settings.clear_removal_flag(chat_id, message.message_id)
     if message.is_automatic_forward:
         settings.set_option(chat_id, f"discussion_thread:{message.message_id}", "on")
         return
@@ -420,7 +429,9 @@ async def moderate_message(
     photos = getattr(message, "photo", None)
     check_image = ai_analysis is not None and image_mode != "off" and bool(photos)
     if ai_analysis is not None and user_id is not None and settings.option(chat_id, "profile") != "off":
-        ai_analysis.record_message(chat_id, user_id, message.message_id)
+        saved = snapshot(message)
+        if saved:
+            ai_analysis.record_message(chat_id, user_id, message.message_id, saved, sent_at(message))
     if not (has_profanity or has_blocked_link or check_flood or suspected_spam or check_ai or check_image):
         return
     if user_id is not None and str(user_id) in settings.allowlist(chat_id, "user"):
@@ -431,6 +442,10 @@ async def moderate_message(
     if not (has_profanity or has_blocked_link or flooding or suspected_spam or check_ai or check_image) or await is_admin(message, bot):
         return
     if has_profanity:
+        if mode == "log":
+            saved = snapshot(message)
+            if saved:
+                settings.flag_removal(chat_id, message.message_id, saved, sent_at(message))
         logger.info("Profanity detected in chat %s, message %s (%s)", chat_id, message.message_id, mode)
     if suspected_spam:
         settings.audit(chat_id, "spam_signal", user_id, detail=str(message.message_id))
@@ -455,7 +470,9 @@ async def moderate_message(
             settings.audit(chat_id, "nsfw_signal", user_id, detail=str(message.message_id))
             if image_mode == "delete":
                 reason = "nsfw"
-    if reason and await delete_message(message, bot):
+    if reason and await remove_saved(
+        bot, settings, chat_id, message.message_id, snapshot(message), sent_at(message)
+    ):
         settings.audit(chat_id, "delete", user_id, detail=f"{reason} · {message.message_id}")
         if (
             reason in {"new_user_spam", "spam", "scam", "advertising"}
@@ -561,17 +578,20 @@ async def edit_allowlist(message: Message, command: CommandObject, bot: Bot, set
 async def apply_sanction(message: Message, command: CommandObject, bot: Bot, settings: ChatSettings):
     if not await is_admin(message, bot):
         return
-    target = message.reply_to_message
-    if target is None or target.sender_chat is not None or target.from_user is None:
-        await message.reply("Ответьте на сообщение участника командой наказания.")
-        return
-    if target.from_user.id == bot.id or await is_admin(target, bot):
-        await message.reply("Этот участник защищён от наказания.")
-        return
-    chat_id = message.chat.id
-    user_id = target.from_user.id
     action = command.command
     detail = (command.args or "").strip()
+    target = message.reply_to_message
+    if action == "unmute" and detail.isascii() and detail.isdecimal() and len(detail) <= 16:
+        user_id = int(detail)
+    elif target is None or target.sender_chat is not None or target.from_user is None:
+        await message.reply("Ответьте на сообщение участника командой наказания. Для снятия мута доступна /unmute ID.")
+        return
+    elif target.from_user.id == bot.id or await is_admin(target, bot):
+        await message.reply("Этот участник защищён от наказания.")
+        return
+    else:
+        user_id = target.from_user.id
+    chat_id = message.chat.id
     if action != "warn":
         if message.chat.type != ChatType.SUPERGROUP:
             await message.reply("Ограничения доступны в супергруппах.")
@@ -676,8 +696,12 @@ async def configure_announcement(message: Message, command: CommandObject, bot: 
 
 
 async def announcement_worker(bot: Bot, settings: ChatSettings):
+    next_prune = 0
     while True:
         now = int(time.time())
+        if now >= next_prune:
+            settings.prune_recovery()
+            next_prune = now + 3600
         for chat_id, body, interval, next_at in settings.due_announcements(now):
             if not settings.advance_announcement(chat_id, next_at, now + interval):
                 continue
@@ -754,6 +778,60 @@ async def open_panel(message: Message, bot: Bot):
         await message.reply("Нажмите Start в личном чате с ботом и повторите /panel.")
     else:
         await message.reply("Код входа отправлен в личный чат.")
+
+
+@group_router.message(Command("cleanup"))
+async def cleanup_flagged(message: Message, command: CommandObject, bot: Bot, settings: ChatSettings):
+    if not await is_admin(message, bot):
+        return
+    arg = (command.args or "30m").strip().lower().removesuffix("m")
+    if not arg.isascii() or not arg.isdecimal() or len(arg) > 4 or not 1 <= int(arg) <= 2880:
+        await message.reply("Используйте /cleanup 30m. Допустимо от 1 до 2880 минут.")
+        return
+
+    chat_id = message.chat.id
+    rows = settings.flagged_removals(chat_id, int(time.time()) - min(int(arg) * 60, DELETE_WINDOW))
+    if not rows:
+        await message.reply("За этот период нет отмеченных сообщений.")
+        return
+
+    chat = await bot.get_chat(chat_id)
+    pinned_id = chat.pinned_message.message_id if chat.pinned_message else None
+    removed = []
+    for message_id, payload, date in rows:
+        if message_id == pinned_id:
+            continue
+        if await remove_saved(bot, settings, chat_id, message_id, payload, date, flagged_only=True):
+            settings.audit(chat_id, "cleanup_delete", detail=str(message_id))
+            removed.append(message_id)
+    summary = f"Удалено: {len(removed)}."
+    if removed:
+        summary += "\nДля восстановления отправьте /restore ID. ID: " + ", ".join(map(str, removed))
+    await message.reply(summary)
+
+
+@group_router.message(Command("restore"))
+async def restore_removed(message: Message, command: CommandObject, bot: Bot, settings: ChatSettings):
+    if not await is_admin(message, bot):
+        return
+    arg = (command.args or "").strip()
+    if not arg.isascii() or not arg.isdecimal() or len(arg) > 16:
+        await message.reply("Используйте /restore ID. ID указан в журнале или отчёте об очистке.")
+        return
+    chat_id, message_id = message.chat.id, int(arg)
+    payload = settings.claim_restore(chat_id, message_id)
+    if payload is None:
+        await message.reply("Доступная копия этого сообщения не найдена.")
+        return
+    try:
+        await repost(bot, chat_id, payload)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        settings.finish_restore(chat_id, message_id, False)
+        await message.reply("Telegram отклонил отправку. Копия сохранена для повторной попытки.")
+        return
+    settings.finish_restore(chat_id, message_id, True)
+    settings.audit(chat_id, "restore", detail=str(message_id))
+    await message.reply("Копия сообщения опубликована от имени Katana.")
 
 
 group_router.message.register(moderate_message)

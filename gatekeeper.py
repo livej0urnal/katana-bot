@@ -13,6 +13,7 @@ from aiogram.types import (
 )
 
 from features import TrafficWindow, record_traffic
+from recovery import remove_saved
 from storage import ChatSettings
 
 
@@ -125,7 +126,15 @@ async def verify_join(callback: CallbackQuery, bot: Bot, settings: ChatSettings)
         await callback.answer("Проверка временно недоступна.")
         return
     settings.audit(chat_id, "captcha_passed", user_id)
-    await callback.answer("Проверка пройдена.")
+    try:
+        await callback.answer("Проверка пройдена.")
+    except TelegramAPIError:
+        logger.info("Could not acknowledge verification in chat %s", chat_id)
+    try:
+        if await callback.message.delete():
+            return
+    except TelegramAPIError:
+        logger.info("Could not delete verification message in chat %s", chat_id)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except TelegramAPIError:
@@ -142,9 +151,9 @@ async def scan_profile(bot, settings, ai_analysis, chat_id, user_id, mode):
             member = await bot.get_chat_member(chat_id, user_id)
             if member.status in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}:
                 return
-            for message_id in ai_analysis.recent_ids(chat_id, user_id):
+            for message_id, payload, date in ai_analysis.recent_snapshots(chat_id, user_id):
                 try:
-                    if await bot.delete_message(chat_id, message_id):
+                    if await remove_saved(bot, settings, chat_id, message_id, payload, date):
                         settings.audit(chat_id, "delete", user_id, detail=f"profile · {message_id}")
                 except TelegramAPIError:
                     logger.info("Could not remove message %s after profile scan", message_id)

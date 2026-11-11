@@ -21,6 +21,7 @@ TABLES = {
     "moderation_log": ("id", "chat_id", "user_id", "actor_id", "action", "detail", "created_at"),
     "reputation_votes": ("chat_id", "voter_id", "user_id", "day"),
     "announcements": ("chat_id", "body", "interval_seconds", "next_at"),
+    "moderation_recovery": ("chat_id", "message_id", "payload", "sent_at", "updated_at", "state"),
 }
 
 

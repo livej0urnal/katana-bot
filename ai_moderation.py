@@ -38,14 +38,18 @@ class AIAnalysis:
             collection.popitem(last=False)
         return items
 
-    def record_message(self, chat_id, user_id, message_id):
+    def record_message(self, chat_id, user_id, message_id, payload, date):
         recent = self.buffer(self.recent_messages, (chat_id, user_id), 5)
-        if not any(existing == message_id for _, existing in recent):
-            recent.append((time.monotonic(), message_id))
+        for index, (_, existing, _, _) in enumerate(recent):
+            if existing == message_id:
+                recent[index] = (time.monotonic(), message_id, payload, date)
+                return
+        recent.append((time.monotonic(), message_id, payload, date))
 
-    def recent_ids(self, chat_id, user_id):
+    def recent_snapshots(self, chat_id, user_id):
         return [
-            message_id for recorded_at, message_id in self.recent_messages.get((chat_id, user_id), ())
+            (message_id, payload, date)
+            for recorded_at, message_id, payload, date in self.recent_messages.get((chat_id, user_id), ())
             if time.monotonic() - recorded_at < 600
         ]
 

@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!requirements.txt
+!requirements-redis.txt
+!*.py
+!alembic.ini
+!migrations/
+!migrations/**
+**/__pycache__/
+**/*.pyc

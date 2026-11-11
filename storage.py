@@ -94,22 +94,17 @@ class ChatSettings(FeatureStorage):
     def profanity_mode(self, chat_id: int) -> str:
         with self.database:
             row = self.database.execute(
-                "SELECT mode FROM profanity_settings WHERE chat_id = ?", (chat_id,)
+                "SELECT value FROM feature_options WHERE chat_id = ? AND name = 'profanity_mode' "
+                "UNION ALL SELECT mode FROM profanity_settings WHERE chat_id = ? "
+                "AND NOT EXISTS (SELECT 1 FROM feature_options WHERE chat_id = ? AND name = 'profanity_mode')",
+                (chat_id, chat_id, chat_id),
             ).fetchone()
-            return row[0] if row else "off"
+            return row[0] if row else "delete"
 
     def set_profanity_mode(self, chat_id: int, mode: str) -> None:
-        with self.database:
-            if mode == "off":
-                self.database.execute(
-                    "DELETE FROM profanity_settings WHERE chat_id = ?", (chat_id,)
-                )
-            else:
-                self.database.execute(
-                    "INSERT INTO profanity_settings (chat_id, mode) VALUES (?, ?) "
-                    "ON CONFLICT (chat_id) DO UPDATE SET mode = excluded.mode",
-                    (chat_id, mode),
-                )
+        if mode not in {"off", "log", "delete"}:
+            raise ValueError(f"Unknown profanity mode: {mode}")
+        self.set_option(chat_id, "profanity_mode", mode)
 
     def report(self, chat_id: int, message_id: int, reporter_id: int, excerpt: str) -> bool:
         with self.database:
