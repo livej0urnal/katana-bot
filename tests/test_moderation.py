@@ -5,9 +5,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from aiogram.enums import ChatMemberStatus, ChatType, MessageEntityType
+from aiogram.filters import CommandObject
 
-from main import ChatSettings, filter_links, remove_by_reply, report_message, show_reports
-from moderation import contains_link
+from handlers import (
+    moderate_message,
+    remove_by_reply,
+    report_message,
+    show_reports,
+    unban_member,
+)
+from moderation import contains_link, contains_profanity
+from storage import ChatSettings
 
 
 class SettingsTests(unittest.TestCase):
@@ -58,6 +66,8 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
             sender_chat=None,
             from_user=SimpleNamespace(id=7),
             is_automatic_forward=False,
+            text=None,
+            caption=None,
             entities=[],
             caption_entities=[SimpleNamespace(type=MessageEntityType.TEXT_LINK)],
             reply=AsyncMock(),
@@ -74,19 +84,71 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(contains_link([MessageEntityType.TEXT_LINK]))
         self.assertFalse(contains_link([MessageEntityType.EMAIL, MessageEntityType.BOLD]))
 
+    def test_detects_russian_and_english_profanity_as_whole_words(self):
+        self.assertTrue(contains_profanity("Вот БЛЯТЬ!"))
+        self.assertTrue(contains_profanity("This is BULLSHIT."))
+        self.assertFalse(contains_profanity("страхуй, хлеб, class, assignment"))
+
+    async def test_profanity_is_logged_before_switching_to_deletion(self):
+        self.message.caption = "Это, блять, тест."
+        self.settings.set_profanity_mode(-1001, "log")
+
+        with self.assertLogs("handlers", level="INFO"):
+            await moderate_message(self.message, self.bot, self.settings)
+        self.bot.delete_message.assert_not_awaited()
+
+        self.settings.set_profanity_mode(-1001, "delete")
+        await moderate_message(self.message, self.bot, self.settings)
+        self.bot.delete_message.assert_awaited_once_with(-1001, 42)
+
+    async def test_autoban_counts_distinct_successful_profanity_deletions(self):
+        self.message.from_user.is_bot = False
+        self.message.caption = "This is bullshit."
+        self.settings.set_profanity_mode(-1001, "delete")
+        self.settings.set_autoban(-1001, True)
+        self.bot.ban_chat_member = AsyncMock(return_value=True)
+        self.bot.send_message = AsyncMock()
+
+        for message_id in (42, 42, 43):
+            self.message.message_id = message_id
+            await moderate_message(self.message, self.bot, self.settings)
+        self.bot.ban_chat_member.assert_not_awaited()
+
+        self.message.message_id = 44
+        self.bot.delete_message.return_value = False
+        await moderate_message(self.message, self.bot, self.settings)
+        self.bot.ban_chat_member.assert_not_awaited()
+
+        self.bot.delete_message.return_value = True
+        await moderate_message(self.message, self.bot, self.settings)
+        self.bot.ban_chat_member.assert_awaited_once_with(-1001, 7)
+        self.bot.send_message.assert_awaited_once()
+
+    async def test_only_admin_can_unban_and_active_members_are_untouched(self):
+        self.message.chat.type = ChatType.SUPERGROUP
+        self.bot.unban_chat_member = AsyncMock(return_value=True)
+        command = CommandObject(command="unban", args="8")
+
+        await unban_member(self.message, command, self.bot, self.settings)
+        self.bot.unban_chat_member.assert_not_awaited()
+
+        self.bot.get_chat_member.return_value.status = ChatMemberStatus.ADMINISTRATOR
+        await unban_member(self.message, command, self.bot, self.settings)
+        self.bot.unban_chat_member.assert_awaited_once_with(-1001, 8, only_if_banned=True)
+
     async def test_link_in_caption_is_deleted_only_when_filter_is_enabled(self):
-        await filter_links(self.message, self.bot, self.settings)
+        await moderate_message(self.message, self.bot, self.settings)
         self.bot.delete_message.assert_not_awaited()
 
         self.settings.set_links_blocked(self.message.chat.id, True)
-        await filter_links(self.message, self.bot, self.settings)
+        await moderate_message(self.message, self.bot, self.settings)
         self.bot.delete_message.assert_awaited_once_with(-1001, 42)
 
     async def test_admin_link_is_preserved(self):
         self.settings.set_links_blocked(self.message.chat.id, True)
         self.bot.get_chat_member.return_value.status = ChatMemberStatus.ADMINISTRATOR
 
-        await filter_links(self.message, self.bot, self.settings)
+        await moderate_message(self.message, self.bot, self.settings)
 
         self.bot.delete_message.assert_not_awaited()
 
@@ -95,7 +157,7 @@ class ModerationTests(unittest.IsolatedAsyncioTestCase):
         self.message.is_automatic_forward = True
         self.bot.get_chat_member.return_value.status = ChatMemberStatus.ADMINISTRATOR
 
-        await filter_links(self.message, self.bot, self.settings)
+        await moderate_message(self.message, self.bot, self.settings)
         self.bot.get_chat_member.assert_not_awaited()
 
         command = SimpleNamespace(
