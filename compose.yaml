@@ -21,5 +21,19 @@ services:
     ports:
       - "127.0.0.1:6380:6379"
 
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai"]
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
 volumes:
   postgres_data:
+  ollama_models:

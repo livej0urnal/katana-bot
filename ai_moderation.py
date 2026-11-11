@@ -17,11 +17,15 @@ MAX_IMAGE_BYTES = 3_000_000
 
 
 class AIAnalysis:
-    def __init__(self, session: ClientSession, url: str, text_model: str, vision_model: str):
+    def __init__(
+        self, session: ClientSession, url: str, text_model: str, vision_model: str,
+        *, request_timeout: float = 15,
+    ):
         self.session = session
         self.url = url.rstrip("/") + "/api/chat"
         self.text_model = text_model
         self.vision_model = vision_model
+        self.request_timeout = request_timeout
         self.contexts = OrderedDict()
         self.recent_messages = OrderedDict()
         self.parallel = asyncio.Semaphore(2)
@@ -63,7 +67,8 @@ class AIAnalysis:
         try:
             async with self.parallel:
                 async with self.session.post(
-                    self.url, json=payload, timeout=ClientTimeout(total=15), allow_redirects=False
+                    self.url, json=payload,
+                    timeout=ClientTimeout(total=self.request_timeout), allow_redirects=False
                 ) as response:
                     response.raise_for_status()
                     if response.status != 200:

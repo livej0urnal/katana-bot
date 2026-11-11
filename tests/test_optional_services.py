@@ -72,3 +72,29 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(settings.option(-100457, "flood"), "off")
                 self.assertEqual(check_admin.await_count, 3)
                 check_admin.assert_awaited_with(123, -100456)
+
+
+@unittest.skipUnless(os.getenv("TEST_OLLAMA_URL"), "Requires Ollama with gemma3:4b")
+class OllamaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_model_returns_valid_text_and_image_labels(self):
+        import base64
+        from aiohttp import ClientSession
+        from ai_moderation import AIAnalysis, IMAGE_LABELS, TEXT_LABELS
+
+        # A generated solid-color PNG. No group messages or account photos are used.
+        pixel = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeklEQVR4nO3PUQkAIBTAwBfKLGYxviH8OITBAtxm7fN1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWPHYBvIog8Ra91+IAAAAASUVORK5CYII="
+        )
+
+        async def download(file_id, destination, timeout):
+            destination.write(pixel)
+
+        bot = SimpleNamespace(download=download)
+        photo = SimpleNamespace(file_id="synthetic", file_size=len(pixel))
+        async with ClientSession() as session:
+            analysis = AIAnalysis(
+                session, os.environ["TEST_OLLAMA_URL"], "gemma3:4b", "gemma3:4b",
+                request_timeout=180,
+            )
+            self.assertIn(await analysis.text_label(1, None, "Thanks for sharing the manual."), TEXT_LABELS)
+            self.assertIn(await analysis.image_label(bot, photo), IMAGE_LABELS)
