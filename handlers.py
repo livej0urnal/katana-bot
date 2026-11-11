@@ -376,16 +376,23 @@ async def show_reports(message: Message, bot: Bot, settings: ChatSettings) -> No
 async def moderate_message(
     message: Message, bot: Bot, settings: ChatSettings, event_update=None, ai_analysis=None, redis_traffic=None
 ) -> None:
+    chat_id = message.chat.id
     if message.is_automatic_forward:
+        settings.set_option(chat_id, f"discussion_thread:{message.message_id}", "on")
         return
 
-    chat_id = message.chat.id
     user_id = getattr(message.from_user, "id", None) if message.sender_chat is None else None
     text = message.text or message.caption or ""
+    thread_id = getattr(message, "message_thread_id", None)
+    parent = getattr(message, "reply_to_message", None)
+    direct_comment = bool(getattr(parent, "is_automatic_forward", False))
     is_comment = getattr(message, "is_topic_message", False) is not True and bool(
-        getattr(message, "message_thread_id", None)
-        or getattr(getattr(message, "reply_to_message", None), "is_automatic_forward", False)
+        direct_comment or (
+            thread_id and settings.option(chat_id, f"discussion_thread:{thread_id}") == "on"
+        )
     )
+    if direct_comment and thread_id:
+        settings.set_option(chat_id, f"discussion_thread:{thread_id}", "on")
     comment_mode = settings.option(chat_id, "comments", "inherit") if is_comment else "inherit"
     if comment_mode == "off":
         return

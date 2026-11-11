@@ -148,6 +148,8 @@ class ChatSettings(FeatureStorage):
                 )
 
     def migrate(self, old_id: int, new_id: int) -> None:
+        if old_id == new_id:
+            return
         with self.database:
             self.database.execute("DELETE FROM groups WHERE chat_id = ?", (old_id,))
             self.database.execute(
@@ -174,3 +176,45 @@ class ChatSettings(FeatureStorage):
             self.database.execute(
                 "DELETE FROM profanity_settings WHERE chat_id = ?", (old_id,)
             )
+            self.database.execute(
+                "INSERT INTO feature_options (chat_id, name, value) "
+                "SELECT ?, name, value FROM feature_options WHERE chat_id = ? "
+                "AND name NOT LIKE ? ON CONFLICT DO NOTHING",
+                (new_id, old_id, "discussion_thread:%"),
+            )
+            self.database.execute(
+                "INSERT INTO allowlist (chat_id, kind, value) "
+                "SELECT ?, kind, value FROM allowlist WHERE chat_id = ? ON CONFLICT DO NOTHING",
+                (new_id, old_id),
+            )
+            self.database.execute(
+                "INSERT INTO announcements (chat_id, body, interval_seconds, next_at) "
+                "SELECT ?, body, interval_seconds, next_at FROM announcements "
+                "WHERE chat_id = ? ON CONFLICT DO NOTHING",
+                (new_id, old_id),
+            )
+            self.database.execute(
+                "INSERT INTO reputation_votes (chat_id, voter_id, user_id, day) "
+                "SELECT ?, voter_id, user_id, day FROM reputation_votes WHERE chat_id = ? "
+                "ON CONFLICT DO NOTHING",
+                (new_id, old_id),
+            )
+            self.database.execute(
+                "INSERT INTO autoban (chat_id) "
+                "SELECT ? FROM autoban WHERE chat_id = ? ON CONFLICT DO NOTHING",
+                (new_id, old_id),
+            )
+            self.database.execute(
+                "UPDATE moderation_log SET chat_id = ? WHERE chat_id = ?", (new_id, old_id)
+            )
+            self.database.execute(
+                "INSERT INTO profanity_strikes (chat_id, user_id, message_id, recorded_at) "
+                "SELECT ?, user_id, message_id, recorded_at FROM profanity_strikes "
+                "WHERE chat_id = ? ON CONFLICT DO NOTHING",
+                (new_id, old_id),
+            )
+            for table in (
+                "feature_options", "allowlist", "announcements", "reputation_votes",
+                "autoban", "profanity_strikes",
+            ):
+                self.database.execute(f"DELETE FROM {table} WHERE chat_id = ?", (old_id,))
